@@ -17,7 +17,6 @@ import struct
 import threading
 
 from pyvisa import constants
-from pyvisa.constants import StatusCode
 
 from ..common import LOGGER
 from ..events import EventContext
