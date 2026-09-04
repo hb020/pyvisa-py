@@ -1,5 +1,5 @@
-VPP-4.3 standard Attribute Compliance
-=====================================
+VPP-4.3 Attribute Compliance
+============================
 
 This document assesses the VPP-4.3 attributes applicable to PyVISA-py's
 implemented resource types: ``GPIB::INSTR``, ``GPIB::INTFC``, ``ASRL::INSTR``,
@@ -14,6 +14,8 @@ Resource classes not listed in a section cannot use that attribute under VPP-4.3
 Usable by USB INSTR.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_ASRL_AVAIL_NUM``
@@ -50,6 +52,8 @@ Usable by ASRL INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_ASRL_DSR_STATE``
 --------------------------
@@ -64,6 +68,7 @@ Usable by ASRL INSTR.
 
 Coverage: Missing.
 
+Proposition: later
 
 ``VI_ATTR_ASRL_END_IN``
 -----------------------
@@ -99,6 +104,8 @@ Usable by ASRL INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_ASRL_RI_STATE``
 -------------------------
@@ -106,12 +113,16 @@ Usable by ASRL INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_ASRL_RTS_STATE``
 --------------------------
 Usable by ASRL INSTR.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_ASRL_STOP_BITS``
@@ -127,6 +138,8 @@ Usable by ASRL INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_ASRL_XON_CHAR``
 -------------------------
@@ -134,12 +147,16 @@ Usable by ASRL INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_DEV_STATUS_BYTE``
 ---------------------------
 Usable by GPIB INTFC.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_DMA_ALLOW_EN``
@@ -151,7 +168,7 @@ Coverage: HiSLIP Partial; all others Missing.
 HiSLIP exposes a constant disabled value instead of providing
 the required writable attribute and unsupported-state response.
 
-Proposition: add to all (`dma_allow_enabled`), in faked RO (False).
+Proposition: add to all (`dma_allow_enabled`), in faked RW (force to False, unsupported-state otherwise).
 
 
 ``VI_ATTR_FILE_APPEND_EN``
@@ -163,7 +180,7 @@ Coverage: HiSLIP Partial; all others Missing.
 HiSLIP exposes a constant false value, but it is not writable
 and is not used by file transfer operations.
 
-Proposition: add to all (`file_append_enabled`), in faked RO (False).
+Proposition: add to all (`file_append_enabled`), in faked RW (force to False, unsupported-state otherwise).
 
 
 ``VI_ATTR_GPIB_ADDR_STATE``
@@ -172,6 +189,7 @@ Usable by GPIB INTFC.
 
 Coverage: Missing.
 
+Proposition: later
 
 
 ``VI_ATTR_GPIB_ATN_STATE``
@@ -193,6 +211,8 @@ Coverage: Full.
 Usable by GPIB INTFC.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_GPIB_NDAC_STATE``
@@ -243,6 +263,8 @@ Usable by GPIB INTFC.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_GPIB_UNADDR_EN``
 --------------------------
@@ -286,7 +308,9 @@ GPIB partial: only normal protocol is supported;
 ASRL and SOCKET full: VI_PROT_4882_STRS is accepted; 
 USB Missing. 
 
-Proposition: add to all (`io_prot`)
+Proposition: fake RW on the missing/partial interfaces, and use unsupported-state on all where needed. 
+Could probably easily be added for GPIB, mark that in the code.
+
 
 ``VI_ATTR_MANF_ID``
 -------------------
@@ -301,12 +325,16 @@ Usable by USB INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_MAX_QUEUE_LENGTH``
 ----------------------------
 Usable by all resources.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_MODEL_CODE``
@@ -322,6 +350,8 @@ Usable by USB INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_RD_BUF_OPER_MODE``
 ----------------------------
@@ -332,12 +362,16 @@ Coverage: HiSLIP Partial; all others Missing.
 HiSLIP stores the default but does not provide formatted read
 buffer behavior.
 
+Proposition: add to all (`read_buffer_operation_mode`), in faked RW (force to VI_FLUSH_DISABLE, unsupported-state otherwise).
+
 
 ``VI_ATTR_RD_BUF_SIZE``
 -----------------------
 Usable by all resources.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_RM_SESSION``
@@ -360,18 +394,17 @@ Usable by all resources.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_RSRC_LOCK_STATE``
 ---------------------------
 Usable by all resources.
 
-Coverage: HiSLIP Partial; all others Missing. 
+Coverage: HiSLIP and VXI-11 Partial; Does not implement VISA lock sharing nor nesting.
+All others Missing. 
 
-HiSLIP stores ``VI_NO_LOCK`` but does not implement VISA lock
-acquisition, sharing, nesting, or remote lock-state reporting.
-
-#TODO: update after #643
-
+Proposition: add to all others (`resource_lock_state`), in faked RW (force to VI_NO_LOCK, unsupported-state otherwise).
 
 ``VI_ATTR_RSRC_MANF_ID``
 ------------------------
@@ -379,12 +412,16 @@ Usable by all resources.
 
 Coverage: Missing.
 
+Proposition: PyVISA-Py does not have a VXI manufacturer ID (although it might be possible to get one). We fake IVI member ID `xx` on HiSLIP. Maybe that?
+NI-Visa = 0x0FF6
 
 ``VI_ATTR_RSRC_MANF_NAME``
 --------------------------
 Usable by all resources.
 
 Coverage: Missing.
+
+Proposition: !!! add to all (`resource_manufacturer_name`), "PyVISA-Py" *Will be very useful.*
 
 
 ``VI_ATTR_RSRC_NAME``
@@ -399,6 +436,9 @@ Coverage: Full.
 Usable by all resources. 
 
 Coverage: Missing.
+
+Proposition: since we're not fully compliant, this is stretching it. NI-VISA MacOS uses 0x0070 0000, although its doc says it is 0x0030 0000
+Maybe set to 0x0030 0000 ?
 
 
 ``VI_ATTR_SEND_END_EN``
@@ -583,7 +623,7 @@ Additionally supported attributes
 
 ``VI_KTATTR_LOCKWAIT``
 ----------------------
-Usable by all VXI-11 INSTR.
+Usable by VXI-11 INSTR.
 
 This is a PyVISA-Py and Keysight specific attribute.
 
