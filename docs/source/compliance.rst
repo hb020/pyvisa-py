@@ -371,7 +371,7 @@ Usable by all resources.
 
 Coverage: Missing.
 
-Proposition: later
+Proposition: together with ``VI_ATTR_WR_BUF_SIZE``. Not sure how to do that, as we don't have ``viSetBuf()``
 
 
 ``VI_ATTR_RM_SESSION``
@@ -445,10 +445,14 @@ Maybe set to 0x0030 0000 ?
 -----------------------
 Usable by all resources.
 
-Coverage: GPIB INSTR and GPIB
-INTFC Full; ASRL, VXI-11, HiSLIP, and USB Partial; SOCKET Missing. The partial
-implementations expose or read the setting but do not consistently apply it to
+Coverage: GPIB INSTR and GPIB INTFC Full; 
+ASRL, VXI-11, HiSLIP, and USB Partial; 
+SOCKET Missing. 
+
+The partial implementations expose or read the setting but do not consistently apply it to
 the underlying transport's end-of-message behavior.
+
+Proposition: to be tackled together with ``VI_ATTR_SUPPRESS_END_EN``.
 
 
 ``VI_ATTR_SUPPRESS_END_EN``
@@ -456,9 +460,13 @@ the underlying transport's end-of-message behavior.
 Usable by GPIB INSTR, ASRL INSTR, TCPIP INSTR (VXI-11 and HiSLIP), TCPIP
 SOCKET, and USB INSTR. 
 
-Coverage: ASRL,
-VXI-11, SOCKET, and USB Full; HiSLIP Partial; GPIB Missing. HiSLIP stores the
-value but its receive implementation does not honor it.
+Coverage: ASRL, VXI-11, SOCKET, and USB Full; 
+HiSLIP Partial; 
+GPIB Missing. 
+
+HiSLIP stores the value but its receive implementation does not honor it.
+
+Proposition: to be tackled together with ``VI_ATTR_SEND_END_EN``.
 
 
 ``VI_ATTR_TCPIP_ADDR``
@@ -490,6 +498,9 @@ Coverage: Partial.
 
 The value is stored but changes do not issue the required HiSLIP device clear or switch the
 protocol's overlap mode.
+
+Proposition: not easy to do. Default value is supposed to be "Preference returned by device." 
+For now: Fake RW (force to VI_FALSE, unsupported-state otherwise).
 
 
 ``VI_ATTR_TCPIP_HISLIP_VERSION``
@@ -524,11 +535,12 @@ Coverage: Full.
 -------------------------
 Usable by TCPIP INSTR (HiSLIP) and TCPIP SOCKET.
 
-Coverage:
-SOCKET Full; HiSLIP Partial. 
+Coverage: SOCKET Full; 
+HiSLIP Partial. 
 
-HiSLIP reports a stored value but does not set the
-TCP socket's ``TCP_NODELAY`` option.
+HiSLIP reports a stored value but does not set the TCP socket's ``TCP_NODELAY`` option.
+
+Proposition: do like SOCKET
 
 
 ``VI_ATTR_TCPIP_PORT``
@@ -542,16 +554,22 @@ Coverage: Full.
 --------------------
 Usable by all resources.
 
-Coverage: all Full except
-HiSLIP Partial. HiSLIP stores the value but does not use it to terminate reads.
+Coverage: all Full except HiSLIP: Partial. 
+
+HiSLIP stores the value but does not use it to terminate reads.
+
+Proposition: to be tackled together with ``VI_ATTR_TERMCHAR_EN``.
 
 
 ``VI_ATTR_TERMCHAR_EN``
 -----------------------
 Usable by all resources.
 
-Coverage: all Full except
-HiSLIP Partial. HiSLIP stores the value but does not use it to terminate reads.
+Coverage: all Full except HiSLIP: Partial. 
+
+HiSLIP stores the value but does not use it to terminate reads.
+
+Proposition: to be tackled together with ``VI_ATTR_TERMCHAR``.
 
 
 ``VI_ATTR_TMO_VALUE``
@@ -568,6 +586,7 @@ INSTR.
 
 Coverage: Missing.
 
+Proposition: if supported by PyVISA: Fake RW (force to VI_TRIG_SW, unsupported-state otherwise). NI_VISA does the same. If not: ignore.
 
 ``VI_ATTR_USB_INTFC_NUM``
 -------------------------
@@ -582,12 +601,16 @@ Usable by USB INSTR.
 
 Coverage: Missing.
 
+Proposition: later
+
 
 ``VI_ATTR_USB_PROTOCOL``
 ------------------------
 Usable by USB INSTR.
 
 Coverage: Missing.
+
+Proposition: later
 
 
 ``VI_ATTR_USB_SERIAL_NUM``
@@ -597,11 +620,13 @@ Usable by USB INSTR.
 Coverage: Full.
 
 
-``VI_ATTR_USER_DATA``
----------------------
+``VI_ATTR_USER_DATA``/``VI_ATTR_USER_DATA_32``/``VI_ATTR_USER_DATA_64``
+-----------------------------------------------------------------------
 Usable by all resources.
 
 Coverage: Missing.
+
+Proposition: Can be implemented as a simple session-local storage attribute.
 
 
 ``VI_ATTR_WR_BUF_OPER_MODE``
@@ -611,12 +636,18 @@ Usable by all resources.
 Coverage: HiSLIP Partial; 
 All others Missing. HiSLIP stores the default but has no formatted write buffer.
 
+Proposition: (write_buffer_operation_mode) fake RW (force to VI_FLUSH_WHEN_FULL, unsupported-state otherwise)
+See ``VI_ATTR_RD_BUF_OPER_MODE`` for more details.
+
 
 ``VI_ATTR_WR_BUF_SIZE``
 -----------------------
 Usable by all resources.
 
 Coverage: Missing.
+
+Proposition: together with ``VI_ATTR_RD_BUF_SIZE``. Not sure how to do that, as we don't have ``viSetBuf()``
+
 
 Additionally supported attributes
 =================================
