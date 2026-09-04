@@ -419,9 +419,7 @@ NI-Visa = 0x0FF6
 --------------------------
 Usable by all resources.
 
-Coverage: Missing.
-
-Proposition: !!! add to all (`resource_manufacturer_name`), "PyVISA-Py" *Will be very useful.*
+Coverage: full.
 
 
 ``VI_ATTR_RSRC_NAME``
@@ -437,7 +435,9 @@ Usable by all resources.
 
 Coverage: Missing.
 
-Proposition: since we're not fully compliant, this is stretching it. NI-VISA MacOS uses 0x0070 0000, although its doc says it is 0x0030 0000
+Proposition: since we're not fully compliant, this is stretching it. 
+NI-VISA MacOS uses 0x0070 0000, NI-VISA's doc says it is 0x0030 0000
+VPP-4.3 says it SHALL be 0x0070 0200
 Maybe set to 0x0030 0000 ?
 
 
