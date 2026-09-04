@@ -720,6 +720,7 @@ class Session(metaclass=abc.ABCMeta):
             return 0, StatusCode.error_nonsupported_attribute
 
         # Check if reading the attribute is allowed.
+        # This should however not exist: only RO and RW should exist.
         if not attr.read:
             raise Exception("Do not now how to handle write only attributes.")
 
@@ -741,8 +742,9 @@ class Session(metaclass=abc.ABCMeta):
 
         try:
             return self._get_attribute(attribute)
-        except UnknownAttribute as e:
-            LOGGER.exception(str(e))
+        except NotImplementedError:
+            return 0, StatusCode.error_nonsupported_attribute
+        except UnknownAttribute:
             return 0, StatusCode.error_nonsupported_attribute
 
     def set_attribute(
@@ -804,11 +806,8 @@ class Session(metaclass=abc.ABCMeta):
         except ValueError:
             return StatusCode.error_nonsupported_attribute_state
         except NotImplementedError:
-            e = UnknownAttribute(attribute)
-            LOGGER.exception(str(e))
             return StatusCode.error_nonsupported_attribute
-        except UnknownAttribute as e:
-            LOGGER.exception(str(e))
+        except UnknownAttribute:
             return StatusCode.error_nonsupported_attribute
 
     def _read(
