@@ -307,7 +307,9 @@ Usable by all resources.
 Coverage: GPIB INSTR, GPIB INTFC, HiSLIP, and TCPIP SOCKET Full; 
 ASRL, VXI-11, and USB Missing.
 
-Proposition: add to all (`interface_number`)
+Proposition: distribute everywhere except GPIB: `interface_number = self.parsed.board`.
+While we're there, correct `VI_ATTR_INTF_INST_NAME` (`interface_instrument_name`): include board in it, for VXI-11 and HiSLIP.
+Add tests about this.
 
 
 ``VI_ATTR_INTF_TYPE``
@@ -352,8 +354,10 @@ Usable by all resources.
 
 Coverage: Missing.
 
-Proposition: later
-
+Proposition: later. This means creating a queue with configurable size 
+per each session, on all types of instruments. 
+See VPP-4.3 Rules 3.2.5, 3.2.6, 3.7.3, 3.7.4, 3.7.5.
+NI-VISA has 50 by default.
 
 ``VI_ATTR_MODEL_CODE``
 ----------------------
@@ -457,6 +461,8 @@ Proposition: since we're not fully compliant, this is stretching it.
 NI-VISA MacOS uses 0x0070 0000, NI-VISA's doc says it is 0x0030 0000
 VPP-4.3 says it SHALL be 0x0070 0200
 Maybe set to 0x0030 0000 ?
+
+Covered by berg's test.
 
 
 ``VI_ATTR_SEND_END_EN``
@@ -604,7 +610,11 @@ INSTR.
 
 Coverage: Missing.
 
-Proposition: if supported by PyVISA: Fake RW (force to VI_TRIG_SW, unsupported-state otherwise). NI_VISA does the same. If not: ignore.
+Proposition: leave as is.
+Although mandatory everywhere, it only seems to be relevant for VXI, 
+which is not supported by PyVISA-Py.
+NI-VISA and R&S VISA do not support it in VXI-11 nor HiSLIP.
+NI-VISA claims it is fixed to VI_TRIG_SW for GPIB, Serial, TCPIP.
 
 ``VI_ATTR_USB_INTFC_NUM``
 -------------------------
@@ -638,7 +648,7 @@ Usable by USB INSTR.
 Coverage: Full.
 
 
-``VI_ATTR_USER_DATA``/``VI_ATTR_USER_DATA_32``/``VI_ATTR_USER_DATA_64``
+``VI_ATTR_USER_DATA`` / ``VI_ATTR_USER_DATA_32`` / ``VI_ATTR_USER_DATA_64``
 -----------------------------------------------------------------------
 Usable by all resources.
 
