@@ -5,7 +5,7 @@ Functions: VPP-4.3 Compliance
 - list what instruments are supported
 - no shared nor nested locks
 - no async read/write
-- no terminate
+- no terminate except HiSLIP
 
 
 Functions: PyVISA-Py Additions
