@@ -1,5 +1,23 @@
-VPP-4.3 Attribute Compliance
-============================
+Functions: VPP-4.3 Compliance
+=============================
+
+# TODO: 
+- list what instruments are supported
+- no shared nor nested locks
+- no async read/write
+- no terminate
+
+
+Functions: PyVISA-Py Additions
+==============================
+
+# TODO: 
+- add prologix
+- show how docmd can be done
+
+
+Attributes: VPP-4.3 Compliance
+==============================
 
 This document assesses the VPP-4.3 attributes applicable to PyVISA-py's
 implemented resource types: ``GPIB::INSTR``, ``GPIB::INTFC``, ``ASRL::INSTR``,
@@ -649,8 +667,8 @@ Coverage: Missing.
 Proposition: together with ``VI_ATTR_RD_BUF_SIZE``. Not sure how to do that, as we don't have ``viSetBuf()``
 
 
-Additionally supported attributes
-=================================
+Attributes: PyVISA-Py Additions
+===============================
 
 ``VI_KTATTR_LOCKWAIT``
 ----------------------
