@@ -1361,6 +1361,67 @@ class TCPIPInstrVxi11(Session):
             self.timeout = value / 1000.0
         return StatusCode.success
 
+    def gpib_command(self, command_byte: bytes) -> Tuple[int, StatusCode]:
+        """Write GPIB command bytes on the bus.
+
+        Corresponds to viGpibCommand function of the VISA library.
+        See: https://linux-gpib.sourceforge.io/doc_html/gpib-protocol.html#REFERENCE-COMMAND-BYTES
+
+        Parameters
+        ----------
+        command_byte : bytes
+            Command bytes to send
+
+        Returns
+        -------
+        int
+            Number of written bytes,
+        StatusCode
+            Return value of the library call.
+
+        """
+        flags = 0
+        flags, lock_timeout = self._adapt_flags_and_lock_timeout(flags)
+        io_timeout = self._io_timeout
+
+        data_in = bytes(command_byte)
+
+        # VXI-11.2 Table B.1
+        VXI11_DOCMD_SEND_COMMAND = 0x020000
+        SEND_COMMAND_DATASIZE = 1  # Table B.1: Send Command's datasize is 1 (byte-granular)
+        SEND_COMMAND_MAX_BYTES = 128  # Table B.1: data_in.data_in_len is 0-128 for Send Command
+
+        if len(data_in) > SEND_COMMAND_MAX_BYTES:  # max according to VXI-11.2 table B.1
+            # vxi-11.2 RULE B.5.3: return with error 5
+            return 0, StatusCode.error_invalid_parameter
+        if len(data_in) == 0:  # no use calling when nothing was given
+            return 0, StatusCode.success
+
+        error, _data_out = self.interface.device_docmd(
+            self.link,
+            flags,
+            io_timeout,
+            lock_timeout,
+            VXI11_DOCMD_SEND_COMMAND,
+            False,  # network_order - irrelevant here, data_in/data_out are raw byte arrays already
+            SEND_COMMAND_DATASIZE,
+            data_in
+        )
+        error = vxi11_error_to_visa(error)
+
+        if error != StatusCode.success:
+            return 0, error
+
+        # about data_out:
+        # VXI-11.2 RULE B.5.5:
+        # In response to a device_docmd RPC whose cmd value is 02000016, a TCP/IP-IEEE 488.1 Interface Device
+        # SHALL execute the SEND COMMAND control sequence described in IEEE 488.2, 16.2.1, where the
+        # commands sent are contained in data_in. The returned data_out SHALL be same as the received data_in.
+        #
+        # so we just ignore it.
+
+        return len(data_in), error
+
 
 class TCPIPInstrVicp(Session):
     """VICP Session that uses pyvicp to do the low level communication."""

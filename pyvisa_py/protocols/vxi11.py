@@ -348,12 +348,15 @@ class CoreClient(rpc.TCPClient):
             datasize,
             data_in,
         )
-        return self.make_call(
-            DEVICE_DOCMD,
-            params,
-            self.packer.pack_device_docmd_parms,
-            self.unpacker.unpack_device_docmd_resp,
-        )
+        try:
+            return self.make_call(
+                DEVICE_DOCMD,
+                params,
+                self.packer.pack_device_docmd_parms,
+                self.unpacker.unpack_device_docmd_resp,
+            )
+        except socket.timeout:
+            return ErrorCodes.io_error, b""
 
     def destroy_link(self, link):
         return self.make_call(
