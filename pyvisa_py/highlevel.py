@@ -181,6 +181,8 @@ class PyVisaLibrary(highlevel.VisaLibraryBase):
                 % open_timeout
             )
 
+        # The resource name is case insensitive, so it is converted to uppercase to ensure consistency.
+        resource_name = resource_name.upper()
         try:
             parsed = rname.parse_resource_name(resource_name)
         except rname.InvalidResourceName:
@@ -498,6 +500,12 @@ class PyVisaLibrary(highlevel.VisaLibraryBase):
             Return value of the library call.
 
         """
+        # rule VPP-4.3 3.3.2
+        if session is None:
+            return self.handle_return_value(session, StatusCode.warning_null_object)
+        if session == constants.VI_NULL:
+            return self.handle_return_value(session, StatusCode.warning_null_object)
+
         try:
             sess = self.sessions[session]
             # The RM session directly references the library.

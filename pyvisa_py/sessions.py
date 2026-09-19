@@ -189,6 +189,15 @@ class Session(metaclass=abc.ABCMeta):
         ResourceAttribute.write_buffer_operation_mode: constants.VI_FLUSH_WHEN_FULL,
     }
 
+    _integer_attribute_ranges: ClassVar[Dict[str, Tuple[int, int]]] = {
+        "ViUInt8": (0, 0xFF),
+        "ViUInt16": (0, 0xFFFF),
+        "ViUInt32": (0, 0xFFFFFFFF),
+        "ViInt8": (-0x80, 0x7F),
+        "ViInt16": (-0x8000, 0x7FFF),
+        "ViInt32": (-0x80000000, 0x7FFFFFFF),
+    }
+
     @staticmethod
     def list_resources() -> List[str]:
         """List the resources available for the resource class."""
@@ -568,7 +577,7 @@ class Session(metaclass=abc.ABCMeta):
             Return value of the library call.
 
         """
-        raise NotImplementedError
+        return StatusCode.error_nonsupported_operation
 
     def read_stb(self) -> Tuple[int, StatusCode]:
         """Reads a status byte of the service request.
@@ -855,6 +864,15 @@ class Session(metaclass=abc.ABCMeta):
                 if attribute_state != default_value:
                     return StatusCode.error_nonsupported_attribute_state
                 return StatusCode.success
+
+        # Validate integer ranges before self.attrs can bypass a setter.
+        valid_range = self._integer_attribute_ranges.get(attr.visa_type)
+        if valid_range is not None:
+            lower_bound, upper_bound = valid_range
+            if not isinstance(attribute_state, int) or not (
+                lower_bound <= attribute_state <= upper_bound
+            ):
+                return StatusCode.error_nonsupported_attribute_state
 
         # Then try to answer those attributes that are registered in
         # self.attrs, see Session.after_parsing

@@ -794,7 +794,8 @@ class TCPIPInstrVxi11(Session):
         )
 
         if error:
-            raise Exception("error creating link: %d" % error)
+            LOGGER.exception("Error creating link: %d", error)
+            raise OpenError()
 
         self.link = link
         self.max_recv_size = min(max_recv_size, 2**30)  # 1GB
@@ -1647,7 +1648,8 @@ class TCPIPSocketSession(Session):
         ret_status = self._connect()
         if ret_status != StatusCode.success:
             self.close()
-            raise Exception("could not connect: {0}".format(str(ret_status)))
+            LOGGER.exception("could not connect: {0}".format(str(ret_status)))
+            raise OpenError()
 
         self.max_recv_size = 4096
         # This buffer is used to store the bytes that appeared after
@@ -1683,7 +1685,8 @@ class TCPIPSocketSession(Session):
             self.interface.setblocking(False)
             self.interface.connect_ex((self.parsed.host_address, int(self.parsed.port)))
         except Exception as e:
-            raise Exception("could not connect: {0}".format(str(e)))
+            LOGGER.exception("could not connect: {0}".format(str(e)))
+            raise OpenError()
         finally:
             self.interface.setblocking(True)
 
