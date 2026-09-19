@@ -1086,8 +1086,9 @@ class TCPIPInstrVxi11(Session):
             flags, lock_timeout = self._adapt_flags_and_lock_timeout(flags)
 
             while num > 0:
-                if num <= self.max_recv_size:
-                    flags |= vxi11.OP_FLAG_END
+                if num <= self.max_recv_size and \
+                    self.attrs[ResourceAttribute.send_end_enabled]:
+                        flags |= vxi11.OP_FLAG_END
 
                 block = data[offset : offset + self.max_recv_size]
 
