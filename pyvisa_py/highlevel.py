@@ -869,7 +869,7 @@ class PyVisaLibrary(highlevel.VisaLibraryBase):
         if mechanism & constants.EventMechanism.handler and \
             not sess._event_state.registry.is_handler_installed(event_type):
                 # the handler mechanism cannot be enabled if no handler is installed
-                return self.handle_return_value(session, StatusCode.error_invalid_mechanism)
+                return self.handle_return_value(session, StatusCode.error_handler_not_installed)
 
         if mechanism & constants.EventMechanism.handler and \
             mechanism & constants.EventMechanism.suspend_handler:
