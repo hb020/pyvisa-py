@@ -496,7 +496,7 @@ Proposition for future change: Could probably easily be added for GPIB.
 | **Access:** RO
 | **Coverage:** Missing
 
-Proposition for future change: together with ``VI_ATTR_WR_BUF_SIZE``. Not sure how to do that, as we don't have ``viSetBuf()``
+Proposition for future change: together with ``VI_ATTR_WR_BUF_SIZE`` and implementation of ``viSetBuf()``
 
 ``VI_ATTR_RM_SESSION``
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -716,7 +716,7 @@ NI-VISA claims it is fixed to VI_TRIG_SW for GPIB, Serial, TCPIP.
 | **Access:** RO
 | **Coverage:** Missing
 
-Proposition for future change: together with ``VI_ATTR_RD_BUF_SIZE``. Not sure how to do that, as we don't have ``viSetBuf()``
+Proposition for future change: together with ``VI_ATTR_RD_BUF_SIZE`` and implementation of ``viSetBuf()``
 
 ``VI_KTATTR_LOCKWAIT``
 ^^^^^^^^^^^^^^^^^^^^^^
