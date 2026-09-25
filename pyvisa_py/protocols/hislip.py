@@ -121,6 +121,10 @@ HEADER_FORMAT = "!2sBBIQ"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
 DEFAULT_MAX_MSG_SIZE = 1 << 20  # from VISA spec
+OVERLAP_FEATURE_BIT = 0x01
+INITIAL_MESSAGE_ID = 0xFFFF_FF00
+NO_MESSAGE_ID = 0xFFFF_FEFE
+WILDCARD_MESSAGE_ID = 0xFFFF_FFFF
 
 
 class HiSLIPInterruptedError(Exception):
@@ -332,7 +336,7 @@ class InitializeResponse(RxHeader):
     def __init__(self, sock: socket.socket) -> None:
         super().__init__(sock, "InitializeResponse")
         assert self.payload_length == 0
-        self.overlap = bool(self.control_code)
+        self.overlap = bool(self.control_code & OVERLAP_FEATURE_BIT)
         self.version, self.session_id = struct.unpack("!4xHH8x", self.header)
 
 
@@ -667,9 +671,6 @@ class AsyncChannel:
                 # from the server until Interrupted is encountered.
                 # If the client detects Interrupted before it detects AsyncInterrupted, the client shall not send any further
                 # messages until AsyncInterrupted is received.
-                self._fail_pending(
-                    lambda: HiSLIPInterruptedError(message.message_parameter)
-                )
                 self._deliver_interrupt(message)
                 continue
 
@@ -737,6 +738,7 @@ class Instrument:
         #     C->S: AsyncInitialize
         #     S->C: AsyncInitializeResponse
 
+        self._io_lock = threading.RLock()
         timeout = timeout or 5.0
         # ``open_timeout`` bounds the connection attempt on both channels, as it
         # does for the other TCP transports.
@@ -754,8 +756,11 @@ class Instrument:
         self._sync: CancellableSocket = CancellableSocket(raw_sync)
 
         init = self.initialize(sub_address=sub_address.encode("ascii"))
-        if init.overlap != 0:
-            print("**** prefer overlap = %d" % init.overlap)
+        self._state_lock = threading.RLock()
+        self._overlap_enabled = init.overlap
+        self._async_interrupted = threading.Event()
+        self._async_interrupted_message_id = NO_MESSAGE_ID
+        self._interrupt_callback = interrupt_callback
         # We set the user timeout once we managed to initialize the connection.
         self._sync.settimeout(timeout)
 
@@ -771,7 +776,7 @@ class Instrument:
         self._async_channel = AsyncChannel(
             self._async,
             event_callback=event_callback,
-            interrupt_callback=interrupt_callback,
+            interrupt_callback=self._handle_async_interrupted,
         )
         # The thread is started in the AsyncChannel constructor,
         # so we don't need to start it here.
@@ -781,9 +786,11 @@ class Instrument:
         self.keepalive = False
         self.timeout = timeout
         self._rmt = 0
-        self._message_id = 0xFFFF_FF00
-        self._last_message_id: Optional[int] = None
+        self._message_id = INITIAL_MESSAGE_ID
+        self._last_sent_message_id = NO_MESSAGE_ID
+        self._last_delivered_message_id = NO_MESSAGE_ID
         self._msg_type: str = ""
+        self._current_message_id = NO_MESSAGE_ID
         self._payload_remaining: int = 0
         self._pending_data = bytearray()
         self._last_read_rmt = False
@@ -797,6 +804,13 @@ class Instrument:
     def close(self) -> None:
         self._async_channel.close()
         self._sync.close()
+
+    def _handle_async_interrupted(self, message_id: int) -> None:
+        with self._state_lock:
+            self._async_interrupted_message_id = message_id
+            self._async_interrupted.set()
+        if self._interrupt_callback is not None:
+            self._interrupt_callback(message_id)
 
     @property
     def timeout(self) -> float:
@@ -820,19 +834,48 @@ class Instrument:
         self._max_msg_size = self.async_maximum_message_size(size)
 
     @property
-    def last_message_id(self) -> Optional[int]:
-        return self._last_message_id
+    def overlap_enabled(self) -> bool:
+        """Return the mode negotiated with the HiSLIP server."""
+        return self._overlap_enabled
 
-    @last_message_id.setter
-    def last_message_id(self, message_id: Optional[int]) -> None:
-        """Re-set last message id and related attributes"""
-        self._last_message_id = message_id
-        self._rmt = 0
+    def _clear_receive_state(self, reset_rmt: bool = True) -> None:
+        """Discard response data buffered by this client."""
+        if reset_rmt:
+            self._rmt = 0
         self._payload_remaining = 0
         self._msg_type = ""
+        self._current_message_id = NO_MESSAGE_ID
         self._pending_data.clear()
         self._last_read_rmt = False
         self._last_read_termchar = False
+
+    def _reset_protocol_state(self) -> None:
+        """Reset MessageIDs and response state after initialization or clear."""
+        with self._state_lock:
+            self._message_id = INITIAL_MESSAGE_ID
+            self._last_sent_message_id = NO_MESSAGE_ID
+            self._last_delivered_message_id = NO_MESSAGE_ID
+            self._async_interrupted.clear()
+            self._clear_receive_state()
+
+    @staticmethod
+    def _request_overlap_feature(feature_bitmap: int, enabled: bool) -> int:
+        return (
+            feature_bitmap | OVERLAP_FEATURE_BIT
+            if enabled
+            else feature_bitmap & ~OVERLAP_FEATURE_BIT
+        )
+
+    def _finish_device_clear(
+        self, server_features: int, requested_overlap: bool
+    ) -> bool:
+        requested_features = self._request_overlap_feature(
+            server_features, requested_overlap
+        )
+        final_features = self.device_clear_complete(requested_features)
+        self._overlap_enabled = bool(final_features & OVERLAP_FEATURE_BIT)
+        self._reset_protocol_state()
+        return self._overlap_enabled
 
     @property
     def keepalive(self) -> bool:
@@ -870,27 +913,45 @@ class Instrument:
         to not exceed max_payload_size.
         """
         # print(f"send({data=})")  # uncomment for debugging
-        data_view = memoryview(data)
-        num_bytes_to_send = len(data)
-        max_payload_size = self._max_msg_size - HEADER_SIZE
+        with self._io_lock:
+            data_view = memoryview(data)
+            num_bytes_to_send = len(data)
+            max_payload_size = self._max_msg_size - HEADER_SIZE
 
-        # send the data in chunks of max_payload_size bytes at a time
-        while num_bytes_to_send > 0:
-            if num_bytes_to_send <= max_payload_size:
-                assert len(data_view) == num_bytes_to_send
-                if send_end:
-                    self._send_data_end_packet(data_view)
+            # send the data in chunks of max_payload_size bytes at a time
+            while num_bytes_to_send > 0:
+                if num_bytes_to_send <= max_payload_size:
+                    assert len(data_view) == num_bytes_to_send
+                    if send_end:
+                        self._send_data_end_packet(data_view)
+                    else:
+                        self._send_data_packet(data_view)
+                    bytes_sent = num_bytes_to_send
                 else:
-                    self._send_data_packet(data_view)
-                bytes_sent = num_bytes_to_send
-            else:
-                self._send_data_packet(data_view[:max_payload_size])
-                bytes_sent = max_payload_size
+                    self._send_data_packet(data_view[:max_payload_size])
+                    bytes_sent = max_payload_size
 
-            data_view = data_view[bytes_sent:]
-            num_bytes_to_send -= bytes_sent
+                data_view = data_view[bytes_sent:]
+                num_bytes_to_send -= bytes_sent
 
         return len(data)
+
+    def _prepare_outgoing_message(self) -> None:
+        if not self._overlap_enabled:
+            if self._payload_remaining:
+                receive_flush(self._sync, self._payload_remaining)
+            self._clear_receive_state(reset_rmt=False)
+
+    def _complete_received_message(self) -> str:
+        """Record that the current server message reached the application."""
+        msg_type = self._msg_type
+        self._last_delivered_message_id = self._current_message_id
+        self._msg_type = ""
+        self._current_message_id = NO_MESSAGE_ID
+        if msg_type == "DataEnd":
+            self._rmt = 1
+            self._last_read_rmt = True
+        return msg_type
 
     def receive(
         self,
@@ -912,6 +973,15 @@ class Instrument:
         # note the use of receive_exact_into (which calls socket.recv_into),
         # avoiding unnecessary copies.
         #
+        with self._io_lock:
+            return self._receive(max_len, termination_char, suppress_end)
+
+    def _receive(
+        self,
+        max_len: int,
+        termination_char: Optional[int],
+        suppress_end: bool,
+    ) -> bytes:
         self._receiving.set()
         try:
             recv_buffer = bytearray()
@@ -923,13 +993,11 @@ class Instrument:
 
             while len(recv_buffer) < max_len:
                 if not self._pending_data and self._payload_remaining <= 0:
-                    if self._msg_type == "DataEnd":
-                        self._rmt = 1
-                        self._last_read_rmt = True
-                        self._msg_type = ""
-                        if not suppress_end:
-                            break
-                    self._msg_type, self._payload_remaining = self._next_data_header()
+                    (
+                        self._msg_type,
+                        self._payload_remaining,
+                        self._current_message_id,
+                    ) = self._next_data_header()
 
                 if not self._pending_data:
                     request_size = min(
@@ -950,15 +1018,12 @@ class Instrument:
                 recv_buffer.extend(self._pending_data[:take])
                 del self._pending_data[:take]
 
-                reached_end = (
-                    not self._pending_data
-                    and self._payload_remaining == 0
-                    and self._msg_type == "DataEnd"
+                message_complete = (
+                    not self._pending_data and self._payload_remaining == 0
                 )
-                if reached_end:
-                    self._rmt = 1
-                    self._last_read_rmt = True
-                    self._msg_type = ""
+                reached_end = False
+                if message_complete:
+                    reached_end = self._complete_received_message() == "DataEnd"
 
                 if self._last_read_termchar or (reached_end and not suppress_end):
                     break
@@ -970,7 +1035,7 @@ class Instrument:
         finally:
             self._receiving.clear()
 
-    def _next_data_header(self) -> Tuple[str, int]:
+    def _next_data_header(self) -> Tuple[str, int, int]:
         """
         receive the next data header (either Data or DataEnd), check the
         message_id, and return the msg_type and payload_length.
@@ -987,33 +1052,49 @@ class Instrument:
                 # If the MessageIDs do not match, the client shall clear any Data
                 # responses already buffered and discard the offending Data message
 
-                if (
-                    header.message_parameter == 0xFFFF_FFFF
-                    or header.message_parameter == self.last_message_id
+                if not self._overlap_enabled and self._async_interrupted.is_set():
+                    receive_flush(self._sync, header.payload_length)
+                    continue
+
+                if self._overlap_enabled or (
+                    header.message_parameter == WILDCARD_MESSAGE_ID
+                    or header.message_parameter == self._last_sent_message_id
                 ):
                     break
 
             if header.msg_type == "Interrupted":
-                # Server sent Interrupted in response to AsyncDeviceClear.
-                # Per IVI-6.1, the client should discard buffered data and
-                # signal the abort to the caller.
-                raise HiSLIPInterruptedError(header.message_parameter)
+                self._clear_receive_state(reset_rmt=False)
+                if not self._overlap_enabled:
+                    if not self._async_interrupted.wait(self._timeout):
+                        raise socket.timeout("timed out waiting for AsyncInterrupted")
+                    self._async_interrupted.clear()
+                continue
 
-            # we're out of sync.  flush this message and continue.
+            if not self._overlap_enabled:
+                self._clear_receive_state(reset_rmt=False)
+
+            # We're out of sync. Flush this message and continue.
             receive_flush(self._sync, header.payload_length)
 
-        return header.msg_type, header.payload_length
+        return header.msg_type, header.payload_length, header.message_parameter
 
-    def device_clear(self) -> None:
-        feature = self.async_device_clear()
-        # Abandon pending messages and wait for in-process synchronous messages
-        # to complete.
-        time.sleep(0.1)
-        # Indicate to server that synchronous channel is cleared out.
-        self.device_clear_complete(feature)
-        # reset messageID and resume normal opreation
-        self._message_id = 0xFFFF_FF00
-        self.last_message_id = None
+    def device_clear(self, overlap_enabled: Optional[bool] = None) -> bool:
+        """Clear the device and negotiate the requested overlap mode."""
+        with self._io_lock:
+            requested_overlap = (
+                self._overlap_enabled
+                if overlap_enabled is None
+                else bool(overlap_enabled)
+            )
+            server_features = self.async_device_clear()
+            return self._finish_device_clear(server_features, requested_overlap)
+
+    def set_overlap_enabled(self, enabled: bool) -> bool:
+        """Request a mode change and return whether the server accepted it."""
+        requested = bool(enabled)
+        if requested == self._overlap_enabled:
+            return True
+        return self.device_clear(requested) == requested
 
     def terminate(self) -> None:
         """Cancel a pending I/O operation on the synchronous channel.
@@ -1095,13 +1176,9 @@ class Instrument:
             finally:
                 self._sync.settimeout(saved_timeout)
 
-            self.device_clear_complete(feature)
+            self._finish_device_clear(feature, self._overlap_enabled)
         finally:
             self._sync._cancel_enabled = True
-
-        # 4. Reset all protocol state
-        self._message_id = 0xFFFF_FF00
-        self.last_message_id = None
 
     def initialize(
         self,
@@ -1203,7 +1280,7 @@ class Instrument:
         response = self._async_channel.request(
             "AsyncLock",
             ctrl_code,
-            self.last_message_id or 0,
+            self._last_sent_message_id,
             expected_response="AsyncLockResponse",
         )
         return LOCKRESPONSE[response.control_code]
@@ -1219,7 +1296,7 @@ class Instrument:
         self._async_channel.request(
             "AsyncRemoteLocalControl",
             ctrl_code,
-            self.last_message_id or 0,
+            self._last_sent_message_id,
             expected_response="AsyncRemoteLocalResponse",
         )
 
@@ -1231,13 +1308,21 @@ class Instrument:
         # async_status_query transaction:
         #     C->S: AsyncStatusQuery
         #     S->C: AsyncStatusResponse
+        with self._state_lock:
+            message_id = (
+                self._last_delivered_message_id
+                if self._overlap_enabled
+                else self._last_sent_message_id
+            )
+            rmt = self._rmt
         response = self._async_channel.request(
             "AsyncStatusQuery",
-            self._rmt,
-            self._message_id,
+            rmt,
+            message_id,
             expected_response="AsyncStatusResponse",
         )
-        self._rmt = 0
+        with self._state_lock:
+            self._rmt = 0
         return response.control_code
 
     def async_device_clear(self) -> int:
@@ -1259,26 +1344,37 @@ class Instrument:
         returns the feature_bitmap from the DeviceClearAcknowledge packet.
         """
         send_msg(self._sync, "DeviceClearComplete", feature_bitmap, 0)
-        response = DeviceClearAcknowledge(self._sync)
-        return response.feature_bitmap
+        while True:
+            response = RxHeader(self._sync)
+            if response.msg_type == "DeviceClearAcknowledge":
+                return response.control_code
+            if response.payload_length:
+                receive_flush(self._sync, response.payload_length)
 
     def trigger(self) -> None:
         """send a Trigger packet on the sync channel"""
-        send_msg(self._sync, "Trigger", self._rmt, self._message_id)
-        self.last_message_id = self._message_id
-        self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
+        with self._io_lock:
+            self._prepare_outgoing_message()
+            send_msg(self._sync, "Trigger", self._rmt, self._message_id)
+            self._last_sent_message_id = self._message_id
+            self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
+            self._rmt = 0
 
     def _send_data_packet(self, payload: BytesBuffer) -> None:
         """send a Data packet on the sync channel"""
+        self._prepare_outgoing_message()
         send_msg(self._sync, "Data", self._rmt, self._message_id, payload)
-        self.last_message_id = self._message_id
+        self._last_sent_message_id = self._message_id
         self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
+        self._rmt = 0
 
     def _send_data_end_packet(self, payload: BytesBuffer) -> None:
         """send a DataEnd packet on the sync channel"""
+        self._prepare_outgoing_message()
         send_msg(self._sync, "DataEnd", self._rmt, self._message_id, payload)
-        self.last_message_id = self._message_id
+        self._last_sent_message_id = self._message_id
         self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
+        self._rmt = 0
 
     def fatal_error(self, error: str, error_message: str = "") -> None:
         err_msg = (error_message or error).encode()

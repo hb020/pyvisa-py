@@ -210,6 +210,67 @@ def test_hislip_tcpip_nodelay_delegates_to_interface():
     assert interface.nodelay is False
 
 
+@pytest.mark.parametrize(("initial", "requested"), ((False, True), (True, False)))
+def test_hislip_overlap_attribute_delegates_to_interface(initial, requested):
+    resource_name = "TCPIP::localhost::hislip0::INSTR"
+    interface = MagicMock()
+    interface.overlap_enabled = initial
+    interface.set_overlap_enabled.return_value = True
+    with patch("pyvisa_py.tcpip.hislip.Instrument", return_value=interface):
+        session = TCPIPInstrHiSLIP(
+            VISARMSession(1),
+            resource_name,
+            rname.parse_resource_name(resource_name),
+        )
+
+    assert session.get_attribute(ResourceAttribute.tcpip_hislip_overlap_enable) == (
+        int(initial),
+        StatusCode.success,
+    )
+    assert (
+        session.set_attribute(
+            ResourceAttribute.tcpip_hislip_overlap_enable, int(requested)
+        )
+        == StatusCode.success
+    )
+    interface.set_overlap_enabled.assert_called_once_with(requested)
+
+
+@pytest.mark.parametrize("invalid", (-1, 2, 1.0, "true", None))
+def test_hislip_overlap_attribute_rejects_non_boolean_states(invalid):
+    resource_name = "TCPIP::localhost::hislip0::INSTR"
+    interface = MagicMock(overlap_enabled=False)
+    with patch("pyvisa_py.tcpip.hislip.Instrument", return_value=interface):
+        session = TCPIPInstrHiSLIP(
+            VISARMSession(1),
+            resource_name,
+            rname.parse_resource_name(resource_name),
+        )
+
+    assert (
+        session.set_attribute(ResourceAttribute.tcpip_hislip_overlap_enable, invalid)
+        == StatusCode.error_nonsupported_attribute_state
+    )
+    interface.set_overlap_enabled.assert_not_called()
+
+
+def test_hislip_overlap_attribute_reports_rejected_mode():
+    resource_name = "TCPIP::localhost::hislip0::INSTR"
+    interface = MagicMock(overlap_enabled=False)
+    interface.set_overlap_enabled.return_value = False
+    with patch("pyvisa_py.tcpip.hislip.Instrument", return_value=interface):
+        session = TCPIPInstrHiSLIP(
+            VISARMSession(1),
+            resource_name,
+            rname.parse_resource_name(resource_name),
+        )
+
+    assert (
+        session.set_attribute(ResourceAttribute.tcpip_hislip_overlap_enable, 1)
+        == StatusCode.error_nonsupported_attribute_state
+    )
+
+
 def test_vxi11_tcpip_port_and_nodelay():
     resource_name = "TCPIP::localhost,4881::INSTR"
     client = MagicMock()

@@ -18,6 +18,7 @@ from pyvisa_py.protocols.hislip import (
     HEADER_SIZE,
     MESSAGETYPE,
     MESSAGETYPE_STR,
+    NO_MESSAGE_ID,
     CancellableSocket,
     HiSLIPInterruptedError,
 )
@@ -204,14 +205,21 @@ class TestInstrumentReceive:
         self.client = CancellableSocket(client_raw)
         self.instrument = object.__new__(Instrument)
         self.instrument._sync = self.client
+        self.instrument._io_lock = threading.RLock()
+        self.instrument._state_lock = threading.RLock()
         self.instrument._receiving = threading.Event()
-        self.instrument._last_message_id = None
+        self.instrument._overlap_enabled = False
+        self.instrument._last_sent_message_id = NO_MESSAGE_ID
+        self.instrument._last_delivered_message_id = NO_MESSAGE_ID
         self.instrument._msg_type = ""
+        self.instrument._current_message_id = NO_MESSAGE_ID
         self.instrument._payload_remaining = 0
         self.instrument._rmt = 0
         self.instrument._pending_data = bytearray()
         self.instrument._last_read_rmt = False
         self.instrument._last_read_termchar = False
+        self.instrument._async_interrupted = threading.Event()
+        self.instrument._timeout = 1.0
 
     def teardown_method(self):
         self.client.close()
@@ -661,23 +669,23 @@ class TestAsyncChannelDispatcher:
         channel.close()
         server.close()
 
-    def test_async_interrupted_aborts_all_pending_requests(self):
+    def test_async_interrupted_preserves_all_pending_requests(self):
         from pyvisa_py.protocols.hislip import AsyncChannel
 
         server, client_raw = socket.socketpair()
-        channel = AsyncChannel(client_raw)
-        errors = []
+        interrupted = []
+        channel = AsyncChannel(client_raw, interrupt_callback=interrupted.append)
+        results = []
 
         def request_status():
-            try:
+            results.append(
                 channel.request(
                     "AsyncStatusQuery",
                     0,
                     0,
                     expected_response="AsyncStatusResponse",
                 )
-            except Exception as exc:
-                errors.append(exc)
+            )
 
         threads = [threading.Thread(target=request_status) for _ in range(2)]
         for thread in threads:
@@ -686,14 +694,15 @@ class TestAsyncChannelDispatcher:
             self._recv_exact(server, HEADER_SIZE)
 
         server.sendall(self._make_hislip_header("AsyncInterrupted", 0, 0xBEEF, 0))
+        server.sendall(self._make_hislip_header("AsyncStatusResponse", 0x31, 0, 0))
+        server.sendall(self._make_hislip_header("AsyncStatusResponse", 0x32, 0, 0))
 
         for thread in threads:
             thread.join(timeout=2.0)
             assert not thread.is_alive()
 
-        assert len(errors) == 2
-        assert all(isinstance(error, HiSLIPInterruptedError) for error in errors)
-        assert all(error.message_id == 0xBEEF for error in errors)
+        assert interrupted == [0xBEEF]
+        assert sorted(response.control_code for response in results) == [0x31, 0x32]
 
         channel.close()
         server.close()
@@ -704,8 +713,12 @@ class TestAsyncChannelDispatcher:
         server, client_raw = socket.socketpair()
         instrument = object.__new__(Instrument)
         instrument._async_channel = AsyncChannel(client_raw)
+        instrument._state_lock = threading.RLock()
+        instrument._overlap_enabled = False
         instrument._rmt = 1
         instrument._message_id = 0xFFFF_FF00
+        instrument._last_sent_message_id = 0xFFFF_FF00
+        instrument._last_delivered_message_id = NO_MESSAGE_ID
         results = []
 
         threads = [
@@ -741,28 +754,32 @@ class TestAsyncChannelDispatcher:
         instrument._async_channel.close()
         server.close()
 
-    def test_async_interrupted_aborts_pending_request(self):
+    def test_async_interrupted_preserves_pending_request(self):
         from pyvisa_py.protocols.hislip import AsyncChannel
 
         server, client_raw = socket.socketpair()
-        channel = AsyncChannel(client_raw)
+        interrupted = []
+        channel = AsyncChannel(client_raw, interrupt_callback=interrupted.append)
 
         def responder():
             request_header = server.recv(1024)
             assert request_header
             server.sendall(self._make_hislip_header("AsyncInterrupted", 0, 0xBEEF, 0))
+            server.sendall(
+                self._make_hislip_header("AsyncStatusResponse", 0x42, 0, 0)
+            )
 
         responder_thread = threading.Thread(target=responder)
         responder_thread.start()
 
-        with pytest.raises(HiSLIPInterruptedError) as excinfo:
-            channel.request(
-                "AsyncStatusQuery", 0, 0, expected_response="AsyncStatusResponse"
-            )
+        response = channel.request(
+            "AsyncStatusQuery", 0, 0, expected_response="AsyncStatusResponse"
+        )
 
         responder_thread.join(timeout=2.0)
         assert not responder_thread.is_alive()
-        assert excinfo.value.message_id == 0xBEEF
+        assert interrupted == [0xBEEF]
+        assert response.control_code == 0x42
 
         channel.close()
         server.close()
@@ -818,11 +835,16 @@ class TestInstrumentTerminate:
         mock_sync.recv.side_effect = BlockingIOError
         inst._sync = mock_sync
         inst._timeout = 5.0
+        inst._state_lock = threading.RLock()
+        inst._overlap_enabled = False
+        inst._async_interrupted = threading.Event()
         inst._message_id = 0xABCD
-        inst._last_message_id = 0x1234
+        inst._last_sent_message_id = 0x1234
+        inst._last_delivered_message_id = 0x5678
         inst._rmt = 1
         inst._payload_remaining = 42
         inst._msg_type = "Data"
+        inst._current_message_id = 0x5678
         inst._pending_data = bytearray(b"unread")
         inst._last_read_rmt = True
         inst._last_read_termchar = True
@@ -840,7 +862,8 @@ class TestInstrumentTerminate:
 
         # Verify state was reset
         assert inst._message_id == 0xFFFF_FF00
-        assert inst._last_message_id is None
+        assert inst._last_sent_message_id == NO_MESSAGE_ID
+        assert inst._last_delivered_message_id == NO_MESSAGE_ID
         assert inst._rmt == 0
         assert inst._payload_remaining == 0
         assert inst._msg_type == ""

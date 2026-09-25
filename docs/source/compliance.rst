@@ -587,10 +587,7 @@ Other resources do not support locking. Lock sharing or lock nesting is not supp
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 | **Used by:** TCPIP INSTR (HiSLIP)
 | **Access:** R/W
-| **Coverage:** Partial; The value is stored but changes do not issue the required HiSLIP device clear or switch the protocol's overlap mode.
-
-Proposition for future change: not easy to do. Default value is supposed to be "Preference returned by device."
-For now: Fake RW (force to VI_FALSE, unsupported-state otherwise)
+| **Coverage:** Full; defaults to the device preference and uses HiSLIP Device Clear feature negotiation when changed.
 
 ``VI_ATTR_TCPIP_HISLIP_VERSION``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

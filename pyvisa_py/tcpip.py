@@ -228,7 +228,6 @@ class TCPIPInstrHiSLIP(Session):
         self.attrs[ResourceAttribute.suppress_end_enabled] = constants.VI_FALSE
         self.attrs[ResourceAttribute.tcpip_address] = parsed.host_address
         self.attrs[ResourceAttribute.tcpip_device_name] = parsed.lan_device_name
-        self.attrs[ResourceAttribute.tcpip_hislip_overlap_enable] = constants.VI_FALSE
         self.attrs[ResourceAttribute.tcpip_hislip_version] = 0x0010_0000
         self.attrs[ResourceAttribute.tcpip_hostname] = parsed.host_address
         self.attrs[ResourceAttribute.tcpip_is_hislip] = constants.VI_TRUE
@@ -243,6 +242,10 @@ class TCPIPInstrHiSLIP(Session):
         self.attrs[ResourceAttribute.tcpip_hislip_max_message_kb] = (
             self.get_max_message_kb,
             self.set_max_message_kb,
+        )
+        self.attrs[ResourceAttribute.tcpip_hislip_overlap_enable] = (
+            self.get_overlap_enable,
+            self.set_overlap_enable,
         )
         self.attrs[ResourceAttribute.tcpip_keepalive] = (
             self.get_keepalive,
@@ -296,6 +299,30 @@ class TCPIPInstrHiSLIP(Session):
 
         self.interface.max_msg_size = round(size_kb * 1024)
         return StatusCode.success
+
+    def get_overlap_enable(
+        self, attribute: ResourceAttribute
+    ) -> Tuple[int, StatusCode]:
+        """Return the overlap mode negotiated with the HiSLIP server."""
+        value = constants.VI_TRUE if self.interface.overlap_enabled else constants.VI_FALSE
+        return value, StatusCode.success
+
+    def set_overlap_enable(
+        self, attribute: ResourceAttribute, enabled: int
+    ) -> StatusCode:
+        """Change overlap mode using the HiSLIP Device Clear handshake."""
+        if not isinstance(enabled, int) or enabled not in (
+            constants.VI_FALSE,
+            constants.VI_TRUE,
+        ):
+            return StatusCode.error_nonsupported_attribute_state
+
+        accepted = self.interface.set_overlap_enabled(bool(enabled))
+        return (
+            StatusCode.success
+            if accepted
+            else StatusCode.error_nonsupported_attribute_state
+        )
 
     def get_keepalive(self, attribute: ResourceAttribute) -> Tuple[bool, StatusCode]:
         """Is TCP keepalive enabled for the resource."""

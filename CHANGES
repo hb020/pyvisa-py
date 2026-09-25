@@ -4,6 +4,7 @@ PyVISA-py Changelog
 0.9.0 (unreleased)
 ------------------
 
+- HiSLIP: implement synchronized and overlapped modes and support changing ``VI_ATTR_TCPIP_HISLIP_OVERLAP_EN`` through Device Clear negotiation.
 - HiSLIP: allow concurrent async transactions and events #658 PR #659
 - HiSLIP: add support for TERMCHAR/TERMCHAR_EN/SEND_END_EN/SUPPRESS_END_EN #656 PR #657
 - HiSLIP: add support for NODELAY and port #654 PR #655
