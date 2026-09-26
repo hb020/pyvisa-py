@@ -11,8 +11,9 @@ import struct
 import threading
 import time
 from collections import defaultdict, deque
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict, Optional, Tuple
+from typing import Callable, ContextManager, Deque, Dict, Optional, Tuple, Union
 
 from pyvisa_py.common import LOGGER, BytesBuffer, MutableBytesBuffer, connect_timeout
 
@@ -446,10 +447,12 @@ class AsyncChannel:
         sock: socket.socket,
         event_callback: Optional[Callable[[int], None]] = None,
         interrupt_callback: Optional[Callable[[int], None]] = None,
+        request_guard: Optional[Callable[[], None]] = None,
     ) -> None:
         self._sock = sock
         self._event_callback = event_callback
         self._interrupt_callback = interrupt_callback
+        self._request_guard = request_guard
         self._send_lock = threading.Lock()
         self._state_lock = threading.Condition()
         self._pending_requests: Dict[str, Deque[_PendingRequest]] = defaultdict(deque)
@@ -492,10 +495,11 @@ class AsyncChannel:
     def request(
         self,
         msg_type: str,
-        control_code: int,
+        control_code: Union[int, Callable[[], int]],
         message_parameter: int,
         payload: bytes = b"",
         expected_response: Optional[str] = None,
+        send_lock: Optional[ContextManager[bool]] = None,
     ) -> AsyncMessage:
         if expected_response is None:
             raise ValueError("expected_response is required for async requests")
@@ -505,26 +509,30 @@ class AsyncChannel:
 
         try:
             with self._send_lock:
-                with self._state_lock:
-                    if self._failure is not None:
-                        raise self._failure
-                    if self._stop.is_set():
-                        raise RuntimeError("async channel closed")
-                    self._pending_requests[expected_response].append(pending)
-                try:
-                    send_msg(
-                        self._sock,
-                        msg_type,
-                        control_code,
-                        message_parameter,
-                        payload,
-                    )
-                except Exception:
-                    self._fail_pending(
-                        lambda: RuntimeError("async channel send failed"),
-                        terminal=True,
-                    )
-                    raise
+                if self._request_guard is not None:
+                    self._request_guard()
+                with send_lock or nullcontext():
+                    with self._state_lock:
+                        if self._failure is not None:
+                            raise self._failure
+                        if self._stop.is_set():
+                            raise RuntimeError("async channel closed")
+                        self._pending_requests[expected_response].append(pending)
+                    try:
+                        code = control_code() if callable(control_code) else control_code
+                        send_msg(
+                            self._sock,
+                            msg_type,
+                            code,
+                            message_parameter,
+                            payload,
+                        )
+                    except Exception:
+                        self._fail_pending(
+                            lambda: RuntimeError("async channel send failed"),
+                            terminal=True,
+                        )
+                        raise
 
             deadline = None if timeout is None else time.monotonic() + float(timeout)
             with self._state_lock:
@@ -739,6 +747,7 @@ class Instrument:
         #     S->C: AsyncInitializeResponse
 
         self._io_lock = threading.RLock()
+        self._rmt_lock = threading.Lock()
         timeout = timeout or 5.0
         # ``open_timeout`` bounds the connection attempt on both channels, as it
         # does for the other TCP transports.
@@ -757,9 +766,11 @@ class Instrument:
 
         init = self.initialize(sub_address=sub_address.encode("ascii"))
         self._state_lock = threading.RLock()
+        self._state_condition = threading.Condition(self._state_lock)
         self._overlap_enabled = init.overlap
         self._async_interrupted = threading.Event()
         self._async_interrupted_message_id = NO_MESSAGE_ID
+        self._sync_interrupted_waiting = False
         self._interrupt_callback = interrupt_callback
         # We set the user timeout once we managed to initialize the connection.
         self._sync.settimeout(timeout)
@@ -777,6 +788,7 @@ class Instrument:
             self._async,
             event_callback=event_callback,
             interrupt_callback=self._handle_async_interrupted,
+            request_guard=self._ensure_async_request_allowed,
         )
         # The thread is started in the AsyncChannel constructor,
         # so we don't need to start it here.
@@ -806,11 +818,32 @@ class Instrument:
         self._sync.close()
 
     def _handle_async_interrupted(self, message_id: int) -> None:
-        with self._state_lock:
+        condition = getattr(self, "_state_condition", None)
+        if condition is not None:
+            with condition:
+                self._async_interrupted_message_id = message_id
+                self._async_interrupted.set()
+                self._sync_interrupted_waiting = False
+                condition.notify_all()
+        else:
             self._async_interrupted_message_id = message_id
             self._async_interrupted.set()
+            self._sync_interrupted_waiting = False
         if self._interrupt_callback is not None:
             self._interrupt_callback(message_id)
+
+    def _ensure_async_request_allowed(self) -> None:
+        """Wait until synchronized interrupted recovery permits async sends."""
+        condition = getattr(self, "_state_condition", None)
+        if condition is None:
+            return
+        with condition:
+            deadline = time.monotonic() + self._timeout
+            while self._sync_interrupted_waiting:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise socket.timeout("timed out waiting for AsyncInterrupted")
+                condition.wait(remaining)
 
     @property
     def timeout(self) -> float:
@@ -841,7 +874,9 @@ class Instrument:
     def _clear_receive_state(self, reset_rmt: bool = True) -> None:
         """Discard response data buffered by this client."""
         if reset_rmt:
-            self._rmt = 0
+            rmt_lock = getattr(self, "_rmt_lock", None)
+            with (rmt_lock or nullcontext()):
+                self._rmt = 0
         self._payload_remaining = 0
         self._msg_type = ""
         self._current_message_id = NO_MESSAGE_ID
@@ -851,12 +886,23 @@ class Instrument:
 
     def _reset_protocol_state(self) -> None:
         """Reset MessageIDs and response state after initialization or clear."""
-        with self._state_lock:
+        condition = getattr(self, "_state_condition", None)
+        if condition is None:
             self._message_id = INITIAL_MESSAGE_ID
             self._last_sent_message_id = NO_MESSAGE_ID
             self._last_delivered_message_id = NO_MESSAGE_ID
             self._async_interrupted.clear()
+            self._sync_interrupted_waiting = False
             self._clear_receive_state()
+            return
+        with condition:
+            self._message_id = INITIAL_MESSAGE_ID
+            self._last_sent_message_id = NO_MESSAGE_ID
+            self._last_delivered_message_id = NO_MESSAGE_ID
+            self._async_interrupted.clear()
+            self._sync_interrupted_waiting = False
+            self._clear_receive_state()
+            condition.notify_all()
 
     @staticmethod
     def _request_overlap_feature(feature_bitmap: int, enabled: bool) -> int:
@@ -949,7 +995,9 @@ class Instrument:
         self._msg_type = ""
         self._current_message_id = NO_MESSAGE_ID
         if msg_type == "DataEnd":
-            self._rmt = 1
+            rmt_lock = getattr(self, "_rmt_lock", None)
+            with (rmt_lock or nullcontext()):
+                self._rmt = 1
             self._last_read_rmt = True
         return msg_type
 
@@ -1057,17 +1105,35 @@ class Instrument:
                     continue
 
                 if self._overlap_enabled or (
-                    header.message_parameter == WILDCARD_MESSAGE_ID
-                    or header.message_parameter == self._last_sent_message_id
+                    header.message_parameter == self._last_sent_message_id
+                    or (
+                        header.msg_type == "Data"
+                        and header.message_parameter == WILDCARD_MESSAGE_ID
+                    )
                 ):
                     break
 
             if header.msg_type == "Interrupted":
                 self._clear_receive_state(reset_rmt=False)
                 if not self._overlap_enabled:
-                    if not self._async_interrupted.wait(self._timeout):
+                    condition = getattr(self, "_state_condition", None)
+                    if condition is not None:
+                        with condition:
+                            wait_for_async = not self._async_interrupted.is_set()
+                            if wait_for_async:
+                                self._sync_interrupted_waiting = True
+                    else:
+                        wait_for_async = not self._async_interrupted.is_set()
+                    if wait_for_async and not self._async_interrupted.wait(self._timeout):
                         raise socket.timeout("timed out waiting for AsyncInterrupted")
-                    self._async_interrupted.clear()
+                    if condition is not None:
+                        with condition:
+                            self._sync_interrupted_waiting = False
+                            self._async_interrupted.clear()
+                            condition.notify_all()
+                    else:
+                        self._sync_interrupted_waiting = False
+                        self._async_interrupted.clear()
                 continue
 
             if not self._overlap_enabled:
@@ -1314,15 +1380,13 @@ class Instrument:
                 if self._overlap_enabled
                 else self._last_sent_message_id
             )
-            rmt = self._rmt
         response = self._async_channel.request(
             "AsyncStatusQuery",
-            rmt,
+            self._take_rmt,
             message_id,
             expected_response="AsyncStatusResponse",
+            send_lock=self._rmt_lock,
         )
-        with self._state_lock:
-            self._rmt = 0
         return response.control_code
 
     def async_device_clear(self) -> int:
@@ -1351,30 +1415,40 @@ class Instrument:
             if response.payload_length:
                 receive_flush(self._sync, response.payload_length)
 
+    def _take_rmt(self) -> int:
+        rmt = self._rmt
+        self._rmt = 0
+        return rmt
+
     def trigger(self) -> None:
         """send a Trigger packet on the sync channel"""
         with self._io_lock:
             self._prepare_outgoing_message()
-            send_msg(self._sync, "Trigger", self._rmt, self._message_id)
+            rmt_lock = getattr(self, "_rmt_lock", None)
+            with (rmt_lock or nullcontext()):
+                send_msg(self._sync, "Trigger", self._take_rmt(), self._message_id)
             self._last_sent_message_id = self._message_id
             self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
-            self._rmt = 0
 
     def _send_data_packet(self, payload: BytesBuffer) -> None:
         """send a Data packet on the sync channel"""
         self._prepare_outgoing_message()
-        send_msg(self._sync, "Data", self._rmt, self._message_id, payload)
+        rmt_lock = getattr(self, "_rmt_lock", None)
+        with (rmt_lock or nullcontext()):
+            send_msg(self._sync, "Data", self._take_rmt(), self._message_id, payload)
         self._last_sent_message_id = self._message_id
         self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
-        self._rmt = 0
 
     def _send_data_end_packet(self, payload: BytesBuffer) -> None:
         """send a DataEnd packet on the sync channel"""
         self._prepare_outgoing_message()
-        send_msg(self._sync, "DataEnd", self._rmt, self._message_id, payload)
+        rmt_lock = getattr(self, "_rmt_lock", None)
+        with (rmt_lock or nullcontext()):
+            send_msg(
+                self._sync, "DataEnd", self._take_rmt(), self._message_id, payload
+            )
         self._last_sent_message_id = self._message_id
         self._message_id = (self._message_id + 2) & 0xFFFF_FFFF
-        self._rmt = 0
 
     def fatal_error(self, error: str, error_message: str = "") -> None:
         err_msg = (error_message or error).encode()

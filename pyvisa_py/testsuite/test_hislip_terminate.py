@@ -209,11 +209,12 @@ class TestInstrumentReceive:
         self.instrument._state_lock = threading.RLock()
         self.instrument._receiving = threading.Event()
         self.instrument._overlap_enabled = False
-        self.instrument._last_sent_message_id = NO_MESSAGE_ID
+        self.instrument._last_sent_message_id = 0xFFFF_FFFF
         self.instrument._last_delivered_message_id = NO_MESSAGE_ID
         self.instrument._msg_type = ""
         self.instrument._current_message_id = NO_MESSAGE_ID
         self.instrument._payload_remaining = 0
+        self.instrument._rmt_lock = threading.Lock()
         self.instrument._rmt = 0
         self.instrument._pending_data = bytearray()
         self.instrument._last_read_rmt = False
@@ -721,6 +722,7 @@ class TestAsyncChannelDispatcher:
         instrument = object.__new__(Instrument)
         instrument._async_channel = AsyncChannel(client_raw)
         instrument._state_lock = threading.RLock()
+        instrument._rmt_lock = threading.Lock()
         instrument._overlap_enabled = False
         instrument._rmt = 1
         instrument._message_id = 0xFFFF_FF00
@@ -737,16 +739,18 @@ class TestAsyncChannelDispatcher:
         for thread in threads:
             thread.start()
 
+        rmt_flags = []
         for _ in threads:
             header = self._recv_exact(server, HEADER_SIZE)
             _, msg_type, control_code, message_parameter, payload_length = (
                 struct.unpack(HEADER_FORMAT, header)
             )
             assert msg_type == MESSAGETYPE["AsyncStatusQuery"]
-            assert control_code == 1
+            rmt_flags.append(control_code)
             assert message_parameter == 0xFFFF_FF00
             assert payload_length == 0
 
+        assert sorted(rmt_flags) == [0, 1]
         server.sendall(self._make_hislip_header("AsyncStatusResponse", 0x31, 0, 0))
         server.sendall(self._make_hislip_header("AsyncStatusResponse", 0x32, 0, 0))
 

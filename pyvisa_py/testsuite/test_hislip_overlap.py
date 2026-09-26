@@ -1,5 +1,6 @@
 """Tests for HiSLIP synchronized and overlapped protocol state."""
 
+import select
 import socket
 import struct
 import threading
@@ -11,10 +12,12 @@ from pyvisa_py.protocols.hislip import (
     HEADER_FORMAT,
     MESSAGETYPE,
     NO_MESSAGE_ID,
+    AsyncChannel,
     AsyncMessage,
     CancellableSocket,
     InitializeResponse,
     Instrument,
+    receive_exact,
 )
 
 
@@ -56,6 +59,7 @@ def test_status_query_uses_mode_specific_message_id(
 ):
     instrument = object.__new__(Instrument)
     instrument._state_lock = threading.RLock()
+    instrument._rmt_lock = threading.Lock()
     instrument._overlap_enabled = overlap_enabled
     instrument._last_sent_message_id = last_sent
     instrument._last_delivered_message_id = last_delivered
@@ -66,9 +70,15 @@ def test_status_query_uses_mode_specific_message_id(
     )
 
     assert instrument.async_status_query() == 0x42
-    instrument._async_channel.request.assert_called_once_with(
-        "AsyncStatusQuery", 1, expected, expected_response="AsyncStatusResponse"
-    )
+    request_args, request_kwargs = instrument._async_channel.request.call_args
+    assert request_args[0] == "AsyncStatusQuery"
+    assert request_args[2] == expected
+    assert request_kwargs == {
+        "expected_response": "AsyncStatusResponse",
+        "send_lock": instrument._rmt_lock,
+    }
+    with instrument._rmt_lock:
+        assert request_args[1]() == 1
     assert instrument._rmt == 0
 
 
@@ -78,7 +88,9 @@ def make_receiving_instrument(overlap_enabled, last_sent=0x100):
     instrument._sync = CancellableSocket(client_raw)
     instrument._io_lock = threading.RLock()
     instrument._state_lock = threading.RLock()
+    instrument._state_condition = threading.Condition(instrument._state_lock)
     instrument._overlap_enabled = overlap_enabled
+    instrument._sync_interrupted_waiting = False
     instrument._last_sent_message_id = last_sent
     instrument._last_delivered_message_id = NO_MESSAGE_ID
     instrument._receiving = threading.Event()
@@ -112,6 +124,19 @@ def test_synchronized_receive_discards_stale_response():
     server, instrument = make_receiving_instrument(False)
     try:
         send_data(server, "DataEnd", 0x0FE, b"stale")
+        send_data(server, "DataEnd", 0x100, b"current")
+
+        assert instrument.receive() == b"current"
+        assert instrument._last_delivered_message_id == 0x100
+    finally:
+        instrument._sync.close()
+        server.close()
+
+
+def test_synchronized_receive_discards_wildcard_dataend():
+    server, instrument = make_receiving_instrument(False)
+    try:
+        send_data(server, "DataEnd", 0xFFFF_FFFF, b"stale")
         send_data(server, "DataEnd", 0x100, b"current")
 
         assert instrument.receive() == b"current"
@@ -235,6 +260,86 @@ def test_synchronized_receive_waits_for_async_after_interrupted_first():
         assert instrument._async_interrupted.is_set() is False
     finally:
         instrument._sync.close()
+        server.close()
+
+
+def test_synchronized_async_request_waits_for_async_interrupted():
+    server, client = socket.socketpair()
+    instrument = object.__new__(Instrument)
+    instrument._state_lock = threading.RLock()
+    instrument._state_condition = threading.Condition(instrument._state_lock)
+    instrument._overlap_enabled = False
+    instrument._sync_interrupted_waiting = True
+    instrument._async_interrupted = threading.Event()
+    instrument._async_interrupted_message_id = NO_MESSAGE_ID
+    instrument._interrupt_callback = None
+    instrument._timeout = 1.0
+    guard_called = threading.Event()
+
+    def request_guard():
+        guard_called.set()
+        instrument._ensure_async_request_allowed()
+
+    channel = AsyncChannel(
+        client,
+        interrupt_callback=instrument._handle_async_interrupted,
+        request_guard=request_guard,
+    )
+    results = []
+
+    def send_status_query():
+        try:
+            results.append(
+                channel.request(
+                    "AsyncStatusQuery",
+                    0,
+                    0x100,
+                    expected_response="AsyncStatusResponse",
+                )
+            )
+        except Exception as error:
+            results.append(error)
+
+    request_thread = threading.Thread(
+        target=send_status_query
+    )
+    request_thread.start()
+
+    try:
+        assert guard_called.wait(1.0)
+        assert not select.select([server], [], [], 0.05)[0]
+
+        server.sendall(
+            struct.pack(
+                HEADER_FORMAT,
+                b"HS",
+                MESSAGETYPE["AsyncInterrupted"],
+                0,
+                0x100,
+                0,
+            )
+        )
+        assert instrument._async_interrupted.wait(1.0)
+        request_header = receive_exact(server, struct.calcsize(HEADER_FORMAT))
+        _, msg_type, _, _, payload_length = struct.unpack(HEADER_FORMAT, request_header)
+        assert msg_type == MESSAGETYPE["AsyncStatusQuery"]
+        assert payload_length == 0
+
+        server.sendall(
+            struct.pack(
+                HEADER_FORMAT,
+                b"HS",
+                MESSAGETYPE["AsyncStatusResponse"],
+                0x42,
+                0,
+                0,
+            )
+        )
+        request_thread.join(timeout=1.0)
+        assert not request_thread.is_alive()
+        assert results == [AsyncMessage("AsyncStatusResponse", 0x42, 0, b"")]
+    finally:
+        channel.close()
         server.close()
 
 
