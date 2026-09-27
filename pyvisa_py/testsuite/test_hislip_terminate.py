@@ -864,9 +864,11 @@ class TestInstrumentTerminate:
         inst.async_device_clear = MagicMock(return_value=0)
         inst.device_clear_complete = MagicMock(return_value=0)
 
-        # Mock RxHeader to return an Interrupted message
+        # Mock RxHeader to return the DeviceClearAcknowledge that completes
+        # the standard Device Clear handshake. Interrupted is a separate
+        # transaction and is not required during terminate recovery.
         mock_header = MagicMock()
-        mock_header.msg_type = "Interrupted"
+        mock_header.msg_type = "DeviceClearAcknowledge"
         mock_header.payload_length = 0
         with patch("pyvisa_py.protocols.hislip.RxHeader", return_value=mock_header):
             inst.complete_terminate()

@@ -139,6 +139,19 @@ class HiSLIPInterruptedError(Exception):
         super().__init__(f"HiSLIP I/O terminated (message_id={message_id:#x})")
 
 
+class HiSLIPFatalError(Exception):
+    """Raised when the peer sends a FatalError message (HiSLIP spec section 6.2).
+
+    Per the spec the connection is no longer usable once this occurs.
+    """
+
+    def __init__(self, error_code: int, error_message: bytes = b""):
+        self.error_code = error_code
+        self.error_message = error_message
+        text = FATALERRORMESSAGE.get(error_code, "Unidentified error")
+        super().__init__(f"HiSLIP FatalError: {text} ({error_message!r})")
+
+
 class CancellableSocket(socket.socket):
     """Socket subclass that supports cross-thread cancellation via select().
 
@@ -314,6 +327,16 @@ class RxHeader:
             raise RuntimeError("unrecognized message type: %d" % msg_type)
 
         self.msg_type = MESSAGETYPE_STR[msg_type]
+
+        if self.msg_type == "FatalError" and expected_message_type != "FatalError":
+            # Per section 6.2, the connection is unusable after this; surface it
+            # immediately instead of discarding it as an unrecognized message.
+            error_message = (
+                receive_exact(sock, self.payload_length)
+                if self.payload_length > 0
+                else b""
+            )
+            raise HiSLIPFatalError(self.control_code, bytes(error_message))
 
         if expected_message_type is not None and self.msg_type != expected_message_type:
             # XXX we should send an 'Error: Unidentified Error' to the server
@@ -670,6 +693,14 @@ class AsyncChannel:
                         lambda: RuntimeError("async channel protocol error"),
                         terminal=True,
                     )
+                break
+
+            if message.msg_type == "FatalError":
+                # Per section 6.2, the connection is unusable after this; fail
+                # any waiter immediately instead of silently ignoring it.
+                error = HiSLIPFatalError(message.control_code, message.payload)
+                LOGGER.error(str(error))
+                self._fail_pending(lambda: error, terminal=True)
                 break
 
             if message.msg_type == "AsyncInterrupted":
@@ -1128,16 +1159,23 @@ class Instrument:
                                 self._sync_interrupted_waiting = True
                     else:
                         wait_for_async = not self._async_interrupted.is_set()
-                    if wait_for_async and not self._async_interrupted.wait(self._timeout):
-                        raise socket.timeout("timed out waiting for AsyncInterrupted")
-                    if condition is not None:
-                        with condition:
+                    try:
+                        if wait_for_async and not self._async_interrupted.wait(
+                            self._timeout
+                        ):
+                            raise socket.timeout("timed out waiting for AsyncInterrupted")
+                    finally:
+                        # Always clear the flag, even on timeout, so a lost
+                        # AsyncInterrupted can't permanently block the async
+                        # channel (and thus any recovery via device_clear()).
+                        if condition is not None:
+                            with condition:
+                                self._sync_interrupted_waiting = False
+                                self._async_interrupted.clear()
+                                condition.notify_all()
+                        else:
                             self._sync_interrupted_waiting = False
                             self._async_interrupted.clear()
-                            condition.notify_all()
-                    else:
-                        self._sync_interrupted_waiting = False
-                        self._async_interrupted.clear()
                 continue
 
             if not self._overlap_enabled:
@@ -1223,29 +1261,10 @@ class Instrument:
                 self._sync.setblocking(True)
                 self._sync.settimeout(self._timeout)
 
-            # 3. Full device clear: AsyncDeviceClear → Interrupted →
-            #    DeviceClearComplete → DeviceClearAcknowledge
+            # 3. Full device clear: AsyncDeviceClear → DeviceClearComplete
+            #    → DeviceClearAcknowledge. Interrupted belongs to the
+            #    separate interrupted transaction and is not required here.
             feature = self.async_device_clear()
-
-            # Read from the sync channel until we get the Interrupted message.
-            # The server sends Interrupted after acknowledging AsyncDeviceClear.
-            saved_timeout = self._sync.gettimeout()
-            self._sync.settimeout(2.0)
-            try:
-                while True:
-                    header = RxHeader(self._sync)
-                    if header.msg_type == "Interrupted":
-                        break
-                    # Discard payload of any other messages
-                    if header.payload_length > 0:
-                        receive_flush(self._sync, header.payload_length)
-            except socket.timeout:
-                # Server didn't send Interrupted — proceed anyway.
-                # DeviceClearComplete will still reset the protocol.
-                pass
-            finally:
-                self._sync.settimeout(saved_timeout)
-
             self._finish_device_clear(feature, self._overlap_enabled)
         finally:
             self._sync._cancel_enabled = True
