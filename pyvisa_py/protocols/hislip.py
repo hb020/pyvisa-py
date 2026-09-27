@@ -772,8 +772,9 @@ class Instrument:
         self._async_interrupted_message_id = NO_MESSAGE_ID
         self._sync_interrupted_waiting = False
         self._interrupt_callback = interrupt_callback
+        self._timeout = timeout
         # We set the user timeout once we managed to initialize the connection.
-        self._sync.settimeout(timeout)
+        self._sync.settimeout(self._timeout)
 
         # open the asynchronous socket and send an initialize packet
         self._async = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -782,7 +783,7 @@ class Instrument:
         self._async.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._async_init = self.async_initialize(session_id=init.session_id)
         # We set the user timeout once we managed to initialize the connection.
-        self._async.settimeout(timeout)
+        self._async.settimeout(self._timeout)
 
         self._async_channel = AsyncChannel(
             self._async,
@@ -837,8 +838,11 @@ class Instrument:
         condition = getattr(self, "_state_condition", None)
         if condition is None:
             return
+        timeout = getattr(self, "_timeout", None)
+        if timeout is None:
+            return
         with condition:
-            deadline = time.monotonic() + self._timeout
+            deadline = time.monotonic() + float(timeout)
             while self._sync_interrupted_waiting:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:

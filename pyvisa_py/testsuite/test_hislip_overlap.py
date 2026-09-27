@@ -205,6 +205,85 @@ def test_mode_change_negotiates_only_overlap_feature_bit(
     assert instrument._last_delivered_message_id == NO_MESSAGE_ID
 
 
+def test_constructor_initializes_timeout_before_async_max_msg_size(monkeypatch):
+    class FakeSocket:
+        def __init__(self, *args, **kwargs):
+            self.family = socket.AF_INET
+            self.type = socket.SOCK_STREAM
+            self.proto = 0
+            self._timeout = None
+
+        def connect(self, addr):
+            return None
+
+        def setsockopt(self, *args, **kwargs):
+            pass
+
+        def getsockopt(self, *args, **kwargs):
+            return 0
+
+        def settimeout(self, value):
+            self._timeout = value
+
+        def gettimeout(self):
+            return self._timeout
+
+        def sendall(self, data):
+            return None
+
+        def shutdown(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeAsyncChannel:
+        def __init__(self, sock, event_callback=None, interrupt_callback=None, request_guard=None):
+            self.sock = sock
+            self._request_guard = request_guard
+
+        def request(self, *args, **kwargs):
+            self._request_guard()
+            return AsyncMessage(
+                "AsyncMaxMsgSizeResponse",
+                0,
+                0,
+                struct.pack("!Q", 1024 * 1024),
+            )
+
+    def fake_cancellable_init(self, sock):
+        self._cancel_enabled = False
+        self._timeout = sock.gettimeout()
+
+    monkeypatch.setattr("pyvisa_py.protocols.hislip.socket.socket", FakeSocket)
+    monkeypatch.setattr(CancellableSocket, "__init__", fake_cancellable_init)
+    monkeypatch.setattr(CancellableSocket, "settimeout", lambda self, value: setattr(self, "_timeout", value))
+    monkeypatch.setattr(CancellableSocket, "setsockopt", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(CancellableSocket, "close", lambda self: None)
+    monkeypatch.setattr(
+        Instrument,
+        "initialize",
+        lambda self, sub_address=b"hislip0": type(
+            "InitResponse", (), {"overlap": False, "session_id": 42}
+        )(),
+    )
+    monkeypatch.setattr(
+        Instrument,
+        "async_initialize",
+        lambda self, session_id: type(
+            "AsyncInitResponse",
+            (),
+            {"server_capabilities": 0, "vendor_id": b"xx"},
+        )(),
+    )
+    monkeypatch.setattr("pyvisa_py.protocols.hislip.AsyncChannel", FakeAsyncChannel)
+
+    instrument = Instrument("127.0.0.1", timeout=1.5)
+
+    assert instrument._timeout == 1.5
+    assert instrument.max_msg_size == 1024 * 1024
+
+
 def test_setting_current_overlap_mode_does_not_clear():
     instrument = object.__new__(Instrument)
     instrument._overlap_enabled = True
