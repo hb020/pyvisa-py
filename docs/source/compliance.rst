@@ -589,6 +589,8 @@ Other resources do not support locking. Lock sharing or lock nesting is not supp
 | **Access:** R/W
 | **Coverage:** Full; defaults to the device preference and uses HiSLIP Device Clear feature negotiation when changed.
 
+Note: this is not fully tested.
+
 ``VI_ATTR_TCPIP_HISLIP_VERSION``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 | **Used by:** TCPIP INSTR (HiSLIP)
